@@ -1,30 +1,34 @@
 # thai-tts-normalizer
 
-A tiny reverse proxy that fixes Thai text **before** it reaches your TTS engine
-(e.g. [OmniVoice](https://github.com/k2-fsa/OmniVoice)), so numbers and the
-repetition mark ๆ are pronounced correctly.
+A tiny reverse proxy that fixes Thai text **before** it reaches your TTS
+server, so numbers and the repetition mark ๆ are pronounced correctly. It
+speaks the standard OpenAI `/audio/speech` protocol, so it works with **any**
+compatible client (Open WebUI, SillyTavern, …) and **any** compatible server
+(OmniVoice, Kokoro, openedai-speech, …).
 
 - `123` → `หนึ่งร้อยยี่สิบสาม` (Arabic digits → Thai words)
 - `1,200` → `หนึ่งพันสองร้อย` (thousands separators handled)
 - `ดีๆ` → `ดีดี` (ๆ / mai yamok expanded)
 
-The chat window is **not** changed — only the text sent to the TTS engine is
-normalized. This is a **standalone service**, not an Open WebUI plugin.
+The displayed text is **not** changed — only the text sent to the TTS engine
+is normalized. This is a **standalone service**, not a plugin.
 
-## Why a proxy and not a plugin?
+## Why a proxy?
 
-Open WebUI's Filter hooks (`inlet`/`stream`/`outlet`) only run on the **LLM
-chat** path. The TTS engine reads text through a **separate** endpoint
-(`/audio/speech`) that filters never touch — there is no TTS filter hook (see
-open-webui discussions
+Some TTS clients give you no hook to pre-process the text they send for
+synthesis. Open WebUI is one: its Filter hooks (`inlet`/`stream`/`outlet`)
+only run on the **LLM chat** path, while the TTS engine reads text through a
+**separate** endpoint (`/audio/speech`) that filters never touch — there is no
+TTS filter hook (see open-webui discussions
 [#13778](https://github.com/open-webui/open-webui/discussions/13778) and
-[#13979](https://github.com/open-webui/open-webui/discussions/13979)). So the
-reliable place to normalize text is between Open WebUI and the TTS server —
-i.e. this proxy.
+[#13979](https://github.com/open-webui/open-webui/discussions/13979)). A proxy
+sidesteps the problem entirely, and because it speaks the standard OpenAI TTS
+protocol it works with **any** client and **any** server, not just Open WebUI.
 
 ```
-Open WebUI ──► [thai-tts-normalizer] ──► OmniVoice
-               normalizes `input` only
+  any client  ──►  [thai-tts-normalizer]  ──►  any TTS server
+  (Open WebUI,     normalizes `input`      (OmniVoice, Kokoro,
+   SillyTavern…)   only                     openedai-speech, …)
 ```
 
 ## How it works
@@ -33,7 +37,8 @@ Open WebUI ──► [thai-tts-normalizer] ──► OmniVoice
   JSON body's `input` field, then forwards to the upstream TTS server.
 - **Everything else** (`/audio/voices`, `/v1/voices`, `/v1/models`,
   `/v1/audio/clone`, `/v1/audio/design`, `/web`, `/docs`, …) is forwarded
-  transparently — voice discovery and OmniVoice's own features keep working.
+  transparently — voice discovery and the upstream server's own features keep
+  working.
 - Streams the audio response straight back, untouched.
 
 The number/ๆ logic is vendored from
@@ -63,10 +68,10 @@ python app.py
 If OmniVoice runs in another container, put this proxy on the same Docker
 network and point `UPSTREAM_BASE_URL` at the OmniVoice service name.
 
-## Point Open WebUI at the proxy
+## Example integration: Open WebUI
 
-You only change **one** setting — the TTS API base URL — from the OmniVoice
-server to this proxy (keep the `/v1` suffix):
+You only change **one** setting — the TTS API base URL — from the TTS server
+to this proxy (keep the `/v1` suffix):
 
 **Admin Panel → Settings → Audio**, with the OpenAI (or Custom TTS) engine:
 
@@ -75,6 +80,10 @@ server to this proxy (keep the `/v1` suffix):
 | API Base URL | `http://omnivoice:8880/v1` | `http://thai-tts-normalizer:8080/v1` |
 
 Everything else (API key, TTS model, voice, response splitting) stays the same.
+
+Other OpenAI-compatible clients (SillyTavern, LobeChat, custom apps, …) work
+the same way: point their TTS / API base URL at the proxy instead of the TTS
+server directly.
 
 Quick check that it's alive: `curl http://localhost:8080/_health`
 
@@ -87,7 +96,7 @@ All via environment variables (see `.env.example`):
 | `UPSTREAM_BASE_URL` | _(required)_ | TTS server root, **no** `/v1` suffix. The path is forwarded verbatim. |
 | `LISTEN_HOST` | `0.0.0.0` | Bind host. |
 | `LISTEN_PORT` | `8080` | Bind port. |
-| `UPSTREAM_API_KEY` | _(empty)_ | Force an `Authorization: Bearer …` upstream. Empty = forward what Open WebUI sends. |
+| `UPSTREAM_API_KEY` | _(empty)_ | Force an `Authorization: Bearer …` upstream. Empty = forward what the client sends. |
 | `NORMALIZE_NUMBERS` | `true` | Convert digits to Thai words. |
 | `NORMALIZE_MAIYAMOK` | `true` | Expand ๆ. |
 | `REQUEST_TIMEOUT` | `120` | Connect/write timeout (s). Audio streaming has no read timeout. |
@@ -99,18 +108,10 @@ All via environment variables (see `.env.example`):
   (`021234567` → a very large number), not digit-by-digit. This is inherited
   from PyThaiTTS's digit→word logic. Tell me if you need phone-number handling.
 - **Thai numerals** (๑๒๓) are not converted — only Arabic digits (123).
-  OmniVoice usually handles Thai numerals already.
+  Many TTS servers (including OmniVoice) handle Thai numerals already.
 - **Scope of digit conversion**: every digit run is converted, including
   things like `v1.0`, years, and percentages. This is usually what you want
   for speech, but toggle `NORMALIZE_NUMBERS=false` if you need finer control.
-
-## Per-user voice selection
-
-You skipped this for now, but note: Open WebUI **already** supports per-user
-voice selection for OpenAI-compatible / Custom TTS engines. Each user can pick
-a voice in **Settings → Audio → TTS** and enable **"Set as default voice"** so
-it overrides the admin default. No plugin or proxy needed for that — if it
-isn't working for you, that's the first place to check.
 
 ## License
 
