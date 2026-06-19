@@ -45,6 +45,20 @@ async def mock_models():
     return {"data": [{"id": "omnivoice"}]}
 
 
+@mock.get("/v1/q")
+async def mock_query_echo(request: Request):
+    # Echo query params as ordered pairs so the test catches a real bug:
+    # dict(request.query_params) would drop repeated keys (?a=1&a=2 -> a=2).
+    return {"pairs": [[k, v] for k, v in request.query_params.multi_items()]}
+
+
+@mock.post("/v1/audio/clone")
+async def mock_clone(request: Request):
+    raw = await request.body()
+    received.append({"path": request.url.path, "raw": raw})
+    return {"cloned": True, "bytes": len(raw)}
+
+
 def _serve(app: FastAPI, port: int) -> uvicorn.Server:
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
     threading.Thread(target=server.run, daemon=True).start()
@@ -129,6 +143,23 @@ def main() -> int:
     # 7. health
     r = httpx.get(f"{base}/_health")
     check(r.status_code == 200 and r.json()["status"] == "ok", "_health reports ok")
+
+    # 8. repeated query params are preserved (not collapsed by dict())
+    r = httpx.get(f"{base}/v1/q?a=1&a=2&b=3")
+    pairs = r.json().get("pairs")
+    check(
+        pairs == [["a", "1"], ["a", "2"], ["b", "3"]],
+        f"repeated query params preserved: {pairs}",
+    )
+
+    # 9. non-speech POST body forwarded unmodified (streamed, not buffered)
+    received.clear()
+    payload = {"ref": "base64audio", "text": "untouched 5 ดีๆ", "n": 12345}
+    r = httpx.post(f"{base}/v1/audio/clone", json=payload)
+    fwd = _json.loads(received[-1]["raw"])
+    check(r.status_code == 200, "clone POST forwarded (200)")
+    check(fwd == payload, "non-speech body forwarded unmodified (not normalized)")
+    check(fwd["text"] == "untouched 5 ดีๆ", "clone text NOT normalized (speech-only scope)")
 
     print(f"\n{'ALL TESTS PASSED' if not failures else str(len(failures)) + ' FAILURE(S): ' + '; '.join(failures)}")
     return 1 if failures else 0

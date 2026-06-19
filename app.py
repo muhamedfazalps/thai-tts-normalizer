@@ -92,7 +92,7 @@ async def _lifespan(fastapi_app: FastAPI):
         await fastapi_app.state.client.aclose()
 
 
-app = FastAPI(title="Thai TTS Normalizing Proxy", version="0.1.0", lifespan=_lifespan)
+app = FastAPI(title="Thai TTS Normalizing Proxy", version="0.1.1", lifespan=_lifespan)
 
 
 def _request_headers(src: Request) -> dict[str, str]:
@@ -139,11 +139,15 @@ def _maybe_normalize_body(body: bytes) -> tuple[bytes, Optional[str], Optional[s
 async def _forward(request: Request) -> Response:
     client: httpx.AsyncClient = app.state.client
     url = UPSTREAM_BASE_URL + request.url.path
-    body = await request.body()
+    is_speech = (
+        request.method.upper() == "POST" and request.url.path in _SPEECH_PATHS
+    )
 
-    before = after = None
-    if request.method.upper() == "POST" and request.url.path in _SPEECH_PATHS:
-        body, before, after = _maybe_normalize_body(body)
+    # The speech path must buffer its (small JSON) body so we can rewrite the
+    # `input` field. Every other path streams the request body straight through
+    # without buffering — important for large uploads such as /v1/audio/clone.
+    if is_speech:
+        new_body, before, after = _maybe_normalize_body(await request.body())
         if before is not None:
             log.info(
                 "normalized speech input (%d -> %d chars): %r -> %r",
@@ -152,15 +156,20 @@ async def _forward(request: Request) -> Response:
                 before[:120],
                 (after or "")[:120],
             )
+        content: Any = new_body
+    else:
+        content = request.stream()
 
     headers = _request_headers(request)
     try:
         req = client.build_request(
             request.method,
             url,
-            params=dict(request.query_params),
+            # multi_items() preserves repeated query params (?a=1&a=2);
+            # dict() would silently keep only the last value.
+            params=list(request.query_params.multi_items()),
             headers=headers,
-            content=body,
+            content=content,
         )
         resp = await client.send(req, stream=True)
     except httpx.HTTPError as exc:
@@ -202,7 +211,8 @@ async def _speech(request: Request) -> Response:
 
 # Catch-all: forward every other method/path transparently (voices, models,
 # clone, design, web UI, swagger, ...). Declared last so the explicit speech
-# routes above take precedence.
+# routes above take precedence. The method list covers every standard HTTP
+# method a client would realistically use against a TTS server.
 @app.api_route(
     "/{full_path:path}",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],

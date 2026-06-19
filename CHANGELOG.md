@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project aims to follow [Semantic Versioning](https://semver.org/). The current
 version lives in `app.py` (`version="..."`).
 
+## 0.1.1 — 2026-06-19
+
+### Fixed
+
+- **Preserve repeated query parameters.** Forwarding used
+  `dict(request.query_params)`, which silently dropped all but the last value
+  for repeated keys (`?a=1&a=2` → `a=2`). Now uses `multi_items()` so every
+  value is preserved. (Latent for Open WebUI traffic, but a real correctness
+  bug.)
+- **Stream non-speech request bodies instead of buffering.** Previously the
+  whole request body was read into memory before forwarding. Now only the
+  speech endpoint buffers (it must, to rewrite the `input` field); every other
+  path (e.g. a large `/v1/audio/clone` upload) streams straight through.
+- Clarified that the catch-all route covers all standard HTTP methods.
+
 ## 0.1.0 — 2026-06-19
 
 Initial release.
