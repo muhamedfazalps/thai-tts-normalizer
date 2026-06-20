@@ -178,6 +178,12 @@ def expand_maiyamok(text: str) -> str:
                     last_match = matches[-1]
                     word_to_repeat = last_match.group()
                     result.append(word_to_repeat)
+                else:
+                    # No Thai word before ๆ — keep the character as-is
+                    result.append("ๆ")
+            else:
+                # Nothing before ๆ at the start of text — keep the character
+                result.append("ๆ")
             i += 1
         else:
             result.append(text[i])
